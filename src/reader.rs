@@ -1,10 +1,12 @@
 use std::io;
 
 use failure::Error;
+use petgraph::graph::{DiGraph, node_index};
 
 use features::Features;
-use token::{Token, EMPTY_TOKEN};
+use token::{DependencyGraph, SimpleToken, EMPTY_TOKEN, DepRel};
 use error::ReadError;
+
 
 /// A trait for objects that can read CoNLL-X `Sentence`s
 pub trait ReadSentence {
@@ -14,7 +16,7 @@ pub trait ReadSentence {
     ///
     /// A call to `read_sentence` may generate an error to indicate that
     /// the operation could not be completed.
-    fn read_sentence(&mut self) -> Result<Option<Vec<Token>>, Error>;
+    fn read_sentence(&mut self) -> Result<Option<DependencyGraph>, Error>;
 
     /// Get an iterator over the sentences in this reader.
     fn sentences(self) -> Sentences<Self>
@@ -39,7 +41,7 @@ impl<R: io::BufRead> Reader<R> {
 }
 
 impl<R: io::BufRead> IntoIterator for Reader<R> {
-    type Item = Result<Vec<Token>, Error>;
+    type Item = Result<DependencyGraph, Error>;
     type IntoIter = Sentences<Reader<R>>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -48,49 +50,78 @@ impl<R: io::BufRead> IntoIterator for Reader<R> {
 }
 
 impl<R: io::BufRead> ReadSentence for Reader<R> {
-    fn read_sentence(&mut self) -> Result<Option<Vec<Token>>, Error> {
+    fn read_sentence(&mut self) -> Result<Option<DependencyGraph>, Error> {
         let mut line = String::new();
-        let mut tokens = Vec::new();
+
+        let mut graph = DiGraph::new();
+        graph.add_node(SimpleToken::Root);
+        let mut edges = Vec::new();
 
         loop {
             line.clear();
 
             // End of reader.
             if self.read.read_line(&mut line)? == 0 {
-                if tokens.is_empty() {
+                if graph.node_count() == 1 {
                     return Ok(None);
                 }
 
-                return Ok(Some(tokens));
+                add_edges(&mut graph, edges);
+
+                return Ok(Some(graph));
             }
 
             // The blank line is a sentence separator. We want to be robust
             // in the case a CoNLL file is malformed and has two newlines as
             // a separator.
             if line.trim().is_empty() {
-                if tokens.is_empty() {
+                if graph.node_count() == 1 {
                     continue;
                 }
 
-                return Ok(Some(tokens));
+                add_edges(&mut graph, edges);
+
+                return Ok(Some(graph));
             }
 
             let mut iter = line.trim().split_terminator('\t');
 
             parse_identifier_field(iter.next())?;
 
-            let mut token = Token::new(parse_form_field(iter.next())?);
-            token.set_lemma(parse_string_field(iter.next()));
-            token.set_cpos(parse_string_field(iter.next()));
-            token.set_pos(parse_string_field(iter.next()));
-            token.set_features(parse_string_field(iter.next()).map(Features::from_string));
-            token.set_head(parse_numeric_field(iter.next())?);
-            token.set_head_rel(parse_string_field(iter.next()));
-            token.set_p_head(parse_numeric_field(iter.next())?);
-            token.set_p_head_rel(parse_string_field(iter.next()));
+            let form = parse_form_field(iter.next())?;
+            let lemma = parse_string_field(iter.next());
+            let cpos = parse_string_field(iter.next());
+            let pos = parse_string_field(iter.next());
+            let features = parse_string_field(iter.next()).map(Features::from_string);
 
-            tokens.push(token);
+            graph.add_node(SimpleToken::Token {
+                form,
+                lemma,
+                cpos,
+                pos,
+                features,
+            });
+
+            let head = parse_numeric_field(iter.next())?;
+            let head_rel = parse_string_field(iter.next());
+            if let (Some(head), Some(head_rel)) = (head, head_rel) {
+              edges.push((head, graph.node_count(), DepRel::NonProjective(head_rel)));
+            }
+
+            let head = parse_numeric_field(iter.next())?;
+            let head_rel = parse_string_field(iter.next());
+            if let (Some(head), Some(head_rel)) = (head, head_rel) {
+              edges.push((head, graph.node_count(), DepRel::Projective(head_rel)));
+            }
         }
+    }
+}
+
+
+
+fn add_edges(graph: &mut DependencyGraph, edges: Vec<(usize, usize, DepRel)>) {
+    for (head, dep, rel) in edges {
+        graph.add_edge(node_index(head), node_index(dep), rel);
     }
 }
 
@@ -106,7 +137,7 @@ impl<R> Iterator for Sentences<R>
 where
     R: ReadSentence,
 {
-    type Item = Result<Vec<Token>, Error>;
+    type Item = Result<DependencyGraph, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.reader.read_sentence() {

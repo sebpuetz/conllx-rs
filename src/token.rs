@@ -1,6 +1,7 @@
 use std::fmt;
 
 use features::Features;
+use petgraph::graph::DiGraph;
 
 /// This data type is a small wrapper around `Vec<Token>` that implements
 /// the `Display` trait. The sentence will formatted in CoNLL-X format.
@@ -128,6 +129,26 @@ impl From<Token> for TokenBuilder {
     fn from(token: Token) -> Self {
         TokenBuilder { token }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SimpleToken {
+    Root,
+    Token {
+        form: String,
+        lemma: Option<String>,
+        cpos: Option<String>,
+        pos: Option<String>,
+        features: Option<Features>,
+    },
+}
+
+pub type DependencyGraph = DiGraph<SimpleToken, DepRel>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DepRel {
+    Projective(String),
+    NonProjective(String),
 }
 
 /// A token with the CoNLL-X annotation layers.

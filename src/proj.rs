@@ -6,14 +6,14 @@ use petgraph::{Directed, Direction, Graph};
 use petgraph::graph::{node_index, EdgeIndex, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef, NodeFiltered, Walker};
 
-use {BfsWithDepth, GraphError, Token};
+use {BfsWithDepth, DepRel, DependencyGraph, GraphError, Token};
 
 pub trait Deprojectivize {
-    fn deprojectivize(&self, sentence: &mut [Token]) -> Result<(), GraphError>;
+    fn deprojectivize(&self, sentence: &mut DependencyGraph) -> Result<(), GraphError>;
 }
 
 pub trait Projectivize {
-    fn projectivize(&self, sentence: &mut [Token]) -> Result<(), GraphError>;
+    fn projectivize(&self, sentence: &mut DependencyGraph) -> Result<(), GraphError>;
 }
 
 /// A projectivizer using the 'head' marking strategy. See: *Pseudo-Projective
@@ -30,7 +30,7 @@ impl HeadProjectivizer {
     /// Returns the index of the node that was lifted.
     fn deprojectivize_next(
         &self,
-        graph: &mut Graph<(), String, Directed>,
+        graph: &mut DependencyGraph,
         lifted_sorted: &[NodeIndex],
         head_labels: &HashMap<NodeIndex, String>,
     ) -> Option<usize> {
@@ -63,7 +63,7 @@ impl HeadProjectivizer {
     /// Find the correct attachment point for the lifted token/node.
     fn search_attachment_point(
         &self,
-        graph: &Graph<(), String, Directed>,
+        graph: &DependencyGraph,
         cur_head: NodeIndex,
         lifted_node: NodeIndex,
         pref_head_rel: &str,
@@ -96,7 +96,7 @@ impl HeadProjectivizer {
                     None => return false,
                 };
 
-                graph[edge] == pref_head_rel
+                graph[edge] == DepRel::NonProjective(pref_head_rel)
             });
 
             // When there are multiple candidates, return the token closes to the head.
@@ -118,7 +118,7 @@ impl HeadProjectivizer {
     /// relation (following the head-strategy).
     fn lift(
         &self,
-        graph: &mut Graph<(), String, Directed>,
+        graph: &mut DependencyGraph,
         lifted: &mut HashSet<NodeIndex>,
         edge_idx: EdgeIndex,
     ) {
@@ -140,8 +140,12 @@ impl HeadProjectivizer {
         if lifted.contains(&target) {
             graph.add_edge(parent, target, rel);
         } else {
-            graph.add_edge(parent, target, format!("{}|{}", rel, parent_rel));
-            lifted.insert(target);
+            if let DepRel::NonProjective(rel) = rel {
+                graph.add_edge(parent, target, DepRel::NonProjective(format!("{}|{}", rel, parent_rel)));
+                lifted.insert(target);
+            } else {
+                unreachable!();
+            }
         }
     }
 
@@ -150,25 +154,29 @@ impl HeadProjectivizer {
     /// and their head labels.
     fn prepare_deproj(
         &self,
-        graph: &Graph<(), String, Directed>,
-    ) -> (Graph<(), String, Directed>, HashMap<NodeIndex, String>) {
+        graph: &DependencyGraph,
+    ) -> (DependencyGraph, HashMap<NodeIndex, String>) {
         let mut pref_head_labels = HashMap::new();
 
         let prepared_graph = graph.map(
             |_, &node_val| node_val,
             |edge_idx, edge_val| {
-                let sep_idx = match edge_val.find('|') {
-                    Some(idx) => idx,
-                    None => return edge_val.clone(),
-                };
+                if let DepRel::NonProjective(rel) = edge_val {
+                    let sep_idx = match rel.find('|') {
+                        Some(idx) => idx,
+                        None => return edge_val.clone(),
+                    };
 
-                let (_, dep) = graph
-                    .edge_endpoints(edge_idx)
-                    .expect("Cannot lookup edge endpoints");
+                    let (_, dep) = graph
+                        .edge_endpoints(edge_idx)
+                        .expect("Cannot lookup edge endpoints");
 
-                pref_head_labels.insert(dep, edge_val[sep_idx + 1..].to_owned());
+                    pref_head_labels.insert(dep, rel[sep_idx + 1..].to_owned());
 
-                edge_val[..sep_idx].to_owned()
+                    DepRel::NonProjective(rel[..sep_idx].to_owned())
+                } else {
+                    edge_val.clone()
+                }
             },
         );
 
@@ -177,8 +185,7 @@ impl HeadProjectivizer {
 }
 
 impl Projectivize for HeadProjectivizer {
-    fn projectivize(&self, sentence: &mut [Token]) -> Result<(), GraphError> {
-        let mut graph = sentence_to_graph(sentence)?;
+    fn projectivize(&self, graph: &mut DependencyGraph) -> Result<(), GraphError> {
         let mut lifted = HashSet::new();
 
         // Lift non-projective edges until there are no non-projective
@@ -192,16 +199,12 @@ impl Projectivize for HeadProjectivizer {
             self.lift(&mut graph, &mut lifted, np_edges[0]);
         }
 
-        // The graph is now a projective tree. Update the dependency relations
-        // in the sentence to correspond to the graph.
-        Ok(update_sentence(&graph, sentence))
+        Ok(())
     }
 }
 
 impl Deprojectivize for HeadProjectivizer {
-    fn deprojectivize(&self, sentence: &mut [Token]) -> Result<(), GraphError> {
-        let graph = sentence_to_graph(sentence)?;
-
+    fn deprojectivize(&self, graph: &mut DependencyGraph) -> Result<(), GraphError> {
         // Find nodes and corresponding edges that are lifted and remove
         // head labels from dependency relations.
         let (mut graph, head_labels) = self.prepare_deproj(&graph);
@@ -231,35 +234,8 @@ impl Deprojectivize for HeadProjectivizer {
     }
 }
 
-pub fn sentence_to_graph(sentence: &[Token]) -> Result<Graph<(), String, Directed>, GraphError> {
-    let mut edges = Vec::with_capacity(sentence.len() + 1);
-    for (idx, token) in sentence.iter().enumerate() {
-        let (head, dependent) = match token.head() {
-            Some(head) => (node_index(head), node_index(idx + 1)),
-            None => continue,
-        };
-
-        let head_rel = match token.head_rel() {
-            Some(head_rel) => head_rel,
-            None => {
-                return Err(GraphError::IncompleteGraph {
-                    value: format!(
-                        "edge from {} to {} does not have a label",
-                        head.index(),
-                        dependent.index()
-                    ),
-                })
-            }
-        };
-
-        edges.push((head, dependent, head_rel.to_owned()))
-    }
-
-    Ok(Graph::<(), String, Directed>::from_edges(edges))
-}
-
 /// Returns non-projective edges in the graph, ordered by length.
-pub fn non_projective_edges(graph: &Graph<(), String, Directed>) -> Vec<EdgeIndex> {
+pub fn non_projective_edges(graph: &DependencyGraph) -> Vec<EdgeIndex> {
     let mut non_projective = Vec::new();
 
     for i in 0..graph.node_count() {
@@ -292,16 +268,6 @@ pub fn non_projective_edges(graph: &Graph<(), String, Directed>) -> Vec<EdgeInde
     });
 
     non_projective.iter().map(|eref| eref.id()).collect()
-}
-
-/// Update a sentence with dependency relations from a graph.
-fn update_sentence(graph: &Graph<(), String, Directed>, sentence: &mut [Token]) {
-    {
-        for edge_ref in graph.edge_references() {
-            sentence[edge_ref.target().index() - 1].set_head(Some(edge_ref.source().index()));
-            sentence[edge_ref.target().index() - 1].set_head_rel(Some(edge_ref.weight().clone()));
-        }
-    }
 }
 
 #[cfg(test)]

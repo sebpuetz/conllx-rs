@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use {Features, ReadSentence, Reader, Token, TokenBuilder};
+use {DependencyGraph, Features, ReadSentence, Reader, Token, TokenBuilder};
 
 lazy_static!{
 
@@ -50,7 +50,7 @@ pub static ref TEST_SENTENCES: Vec<Vec<Token>> =
     ];
 }
 
-pub fn read_sentences(filename: &str) -> Vec<Vec<Token>> {
+pub fn read_sentences(filename: &str) -> Vec<DependencyGraph> {
     Reader::new(BufReader::new(File::open(filename).unwrap()))
         .sentences()
         .map(|s| s.unwrap())
