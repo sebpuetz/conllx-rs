@@ -151,6 +151,17 @@ pub enum DepRel {
     NonProjective(String),
 }
 
+impl fmt::Display for DepRel {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use DepRel::*;
+
+        match self {
+            Projective(rel) => write!(f, "{}", rel),
+            NonProjective(rel) => write!(f, "{}", rel),
+        }
+    }
+}
+
 /// A token with the CoNLL-X annotation layers.
 ///
 /// The fields of CoNLLX tokens are described at:

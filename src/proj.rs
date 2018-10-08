@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::cmp::{max, min};
 
 use itertools::Itertools;
-use petgraph::{Directed, Direction, Graph};
+use petgraph::Direction;
 use petgraph::graph::{node_index, EdgeIndex, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef, NodeFiltered, Walker};
 
-use {BfsWithDepth, DepRel, DependencyGraph, GraphError, Token};
+use {BfsWithDepth, DepRel, DependencyGraph, GraphError};
 
 pub trait Deprojectivize {
     fn deprojectivize(&self, sentence: &mut DependencyGraph) -> Result<(), GraphError>;
@@ -96,7 +96,7 @@ impl HeadProjectivizer {
                     None => return false,
                 };
 
-                graph[edge] == DepRel::NonProjective(pref_head_rel)
+                graph[edge] == DepRel::NonProjective(pref_head_rel.to_owned())
             });
 
             // When there are multiple candidates, return the token closes to the head.
@@ -140,12 +140,8 @@ impl HeadProjectivizer {
         if lifted.contains(&target) {
             graph.add_edge(parent, target, rel);
         } else {
-            if let DepRel::NonProjective(rel) = rel {
-                graph.add_edge(parent, target, DepRel::NonProjective(format!("{}|{}", rel, parent_rel)));
-                lifted.insert(target);
-            } else {
-                unreachable!();
-            }
+            graph.add_edge(parent, target, DepRel::NonProjective(format!("{}|{}", rel, parent_rel)));
+            lifted.insert(target);
         }
     }
 
@@ -159,7 +155,7 @@ impl HeadProjectivizer {
         let mut pref_head_labels = HashMap::new();
 
         let prepared_graph = graph.map(
-            |_, &node_val| node_val,
+            |_, node_val| node_val.clone(),
             |edge_idx, edge_val| {
                 if let DepRel::NonProjective(rel) = edge_val {
                     let sep_idx = match rel.find('|') {
@@ -196,7 +192,7 @@ impl Projectivize for HeadProjectivizer {
                 break;
             }
 
-            self.lift(&mut graph, &mut lifted, np_edges[0]);
+            self.lift(graph, &mut lifted, np_edges[0]);
         }
 
         Ok(())
@@ -230,7 +226,7 @@ impl Deprojectivize for HeadProjectivizer {
             };
         }
 
-        Ok(update_sentence(&graph, sentence))
+        Ok(())
     }
 }
 
@@ -274,7 +270,7 @@ pub fn non_projective_edges(graph: &DependencyGraph) -> Vec<EdgeIndex> {
 mod tests {
     use petgraph::graph::{node_index, NodeIndex};
 
-    use {non_projective_edges, sentence_to_graph, Deprojectivize, HeadProjectivizer, Projectivize, Token};
+    use {non_projective_edges, Deprojectivize, DependencyGraph, HeadProjectivizer, Projectivize};
     use tests::read_sentences;
 
     lazy_static! {
@@ -286,11 +282,10 @@ mod tests {
         ];
     }
 
-    fn sent_non_projective_edges(sents: &[Vec<Token>]) -> Vec<Vec<(NodeIndex, NodeIndex)>> {
+    fn sent_non_projective_edges(sents: &[DependencyGraph]) -> Vec<Vec<(NodeIndex, NodeIndex)>> {
         let mut np_edges = Vec::new();
 
-        for sent in sents {
-            let graph = sentence_to_graph(sent).unwrap();
+        for graph in sents {
             let np: Vec<_> = non_projective_edges(&graph)
                 .iter()
                 .map(|idx| graph.edge_endpoints(*idx).unwrap())
