@@ -20,3 +20,16 @@ pub enum GraphError {
     #[fail(display = "incomplete graph: {}", value)]
     IncompleteGraph { value: String },
 }
+/// DepGraph errors.
+#[derive(Debug, Fail)]
+pub enum DepGraphError {
+    /// The graph is missing relevant information.
+    #[fail(display = "invalid edge: {}", value)]
+    InvalidEdge { value: String },
+    /// The graph is missing relevant information.
+    #[fail(display = "multiheaded token: {}", value)]
+    MultiheadedToken { value: String },
+    /// The graph is missing relevant information.
+    #[fail(display = "cyclic graph: {}", value)]
+    CyclicGraph { value: String },
+}

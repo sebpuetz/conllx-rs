@@ -7,6 +7,9 @@ use token::{Token, EMPTY_TOKEN};
 use error::ReadError;
 use graph::DepGraph;
 use graph;
+use petgraph::Graph;
+use petgraph::graph::node_index;
+use graph::Node;
 
 /// A trait for objects that can read CoNLL-X `Sentence`s
 pub trait ReadSentence {
@@ -99,7 +102,8 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
 
     fn read_sentence_to_graph(&mut self) -> Result<Option<DepGraph>, Error> {
         let mut line = String::new();
-        let mut graph = DepGraph::default();
+        let mut graph = Graph::new();
+        graph.add_node(Node::Root);
         let mut edges: Vec<(usize, usize, String)> = Vec::new();
 
         loop {
@@ -107,27 +111,27 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
 
             // End of reader.
             if self.read.read_line(&mut line)? == 0 {
-                if graph.is_empty() {
+                if graph.node_count() == 1 {
                     return Ok(None);
                 }
                 for (head, dep, rel) in edges {
-                    graph.add_relation(head, dep, rel).unwrap();
+                    graph.add_edge(node_index(head), node_index(dep), rel);
                 }
 
-                return Ok(Some(graph));
+                return Ok(Some(DepGraph::new(graph)));
             }
 
             // The blank line is a sentence separator. We want to be robust
             // in the case a CoNLL file is malformed and has two newlines as
             // a separator.
             if line.trim().is_empty() {
-                if graph.is_empty() {
+                if graph.node_count() == 1 {
                     continue;
                 }
                 for (head, dep, rel) in edges {
-                    graph.add_relation(head, dep, rel).unwrap();
+                    graph.add_edge(node_index(head), node_index(dep), rel);
                 }
-                return Ok(Some(graph));
+                return Ok(Some(DepGraph::new(graph)));
             }
 
             let mut iter = line.trim().split_terminator('\t');
@@ -145,7 +149,7 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
             // token.set_p_head(parse_numeric_field(iter.next())?);
             // token.set_p_head_rel(parse_string_field(iter.next()));
 
-            graph.push_token(token);
+            graph.add_node(Node::Token(token));
         }
     }
 }
