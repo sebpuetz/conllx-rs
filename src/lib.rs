@@ -13,6 +13,8 @@ pub use error::{GraphError, ReadError};
 mod features;
 pub use features::Features;
 
+pub mod graph;
+
 mod graph_algo;
 pub(crate) use graph_algo::BfsWithDepth;
 
