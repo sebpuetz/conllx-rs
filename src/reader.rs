@@ -111,7 +111,7 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
                     return Ok(None);
                 }
                 for (head, dep, rel) in edges {
-                    graph.add_relation(head, dep, rel)
+                    graph.add_relation(head, dep, rel).unwrap();
                 }
 
                 return Ok(Some(graph));
@@ -125,7 +125,7 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
                     continue;
                 }
                 for (head, dep, rel) in edges {
-                    graph.add_relation(head, dep, rel)
+                    graph.add_relation(head, dep, rel).unwrap();
                 }
                 return Ok(Some(graph));
             }

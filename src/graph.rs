@@ -2,10 +2,10 @@ use std::mem;
 use std::ops::Index;
 
 use petgraph::algo::is_cyclic_directed;
-use petgraph::prelude::{Direction, DiGraph, EdgeRef, Graph, NodeIndex};
+use petgraph::prelude::{DiGraph, Direction, EdgeRef, Graph, NodeIndex};
 
-use Features;
 use petgraph::graph::node_index;
+use Features;
 
 /// A builder for `Token`s.
 ///
@@ -198,7 +198,15 @@ impl DepGraph {
     ///
     /// If `dependent` already has a head relation, this relation is removed
     /// to ensure single-headedness.
-    pub fn add_relation(&mut self, head: usize, dependent: usize, deprel: String) {
+    pub fn add_relation(
+        &mut self,
+        head: usize,
+        dependent: usize,
+        deprel: String,
+    ) -> Result<(), String> {
+        if (head >= self.0.node_count()) | (dependent >= self.0.node_count()) {
+            return Err("Can't add new tokens through this method".to_string());
+        }
         // Remove existing head relation (when present).
         if let Some(idx) = self
             .0
@@ -209,9 +217,13 @@ impl DepGraph {
 
         self.0
             .add_edge(node_index(head), node_index(dependent), deprel);
+        Ok(())
     }
 
-    pub fn from_graph_indices(graph: DiGraph<Node, String>, indices: Vec<NodeIndex>) -> Result<Self, DepGraphError>{
+    pub fn from_graph_indices(
+        graph: DiGraph<Node, String>,
+        indices: Vec<NodeIndex>,
+    ) -> Result<Self, DepGraphError> {
         let (mut nodes, edges) = graph.into_nodes_edges();
         let mut old_to_new_indices = vec![0usize; nodes.len()];
         let mut has_head = vec![false; nodes.len()];
@@ -229,7 +241,7 @@ impl DepGraph {
             let source = old_to_new_indices[edge.source().index()];
             let target = old_to_new_indices[edge.target().index()];
             if has_head[target] {
-                return Err(DepGraphError("Multiheaded token".to_string()))
+                return Err(DepGraphError("Multiheaded token".to_string()));
             }
             has_head[target] = true;
             let weight = edge.weight;
@@ -237,7 +249,7 @@ impl DepGraph {
         }
 
         if is_cyclic_directed(&graph) {
-            return Err(DepGraphError("Graph contains cycle".to_string()))
+            return Err(DepGraphError("Graph contains cycle".to_string()));
         };
 
         Ok(DepGraph(graph))
@@ -257,20 +269,19 @@ impl DepGraph {
 
     pub fn from_graph(graph: DiGraph<Node, String>) -> Result<Self, DepGraphError> {
         if is_cyclic_directed(&graph) {
-            return Err(DepGraphError("Graph contains cycle".to_string()))
+            return Err(DepGraphError("Graph contains cycle".to_string()));
         };
 
         let mut has_head = vec![false; graph.node_count()];
 
         for edge in graph.edge_references() {
             if has_head[edge.target().index()] {
-                return Err(DepGraphError("Multiheaded token".to_string()))
+                return Err(DepGraphError("Multiheaded token".to_string()));
             }
             has_head[edge.target().index()] = true;
         }
         Ok(DepGraph(graph))
     }
-
 }
 
 impl Index<usize> for DepGraph {
