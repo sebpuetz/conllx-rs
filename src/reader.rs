@@ -5,6 +5,8 @@ use failure::Error;
 use features::Features;
 use token::{Token, EMPTY_TOKEN};
 use error::ReadError;
+use graph::DepGraph;
+use graph;
 
 /// A trait for objects that can read CoNLL-X `Sentence`s
 pub trait ReadSentence {
@@ -14,7 +16,9 @@ pub trait ReadSentence {
     ///
     /// A call to `read_sentence` may generate an error to indicate that
     /// the operation could not be completed.
-    fn read_sentence(&mut self) -> Result<Option<Vec<Token>>, Error>;
+    fn read_sentence_to_vec(&mut self) -> Result<Option<Vec<Token>>, Error>;
+
+    fn read_sentence_to_graph(&mut self) -> Result<Option<DepGraph>, Error>;
 
     /// Get an iterator over the sentences in this reader.
     fn sentences(self) -> Sentences<Self>
@@ -48,7 +52,7 @@ impl<R: io::BufRead> IntoIterator for Reader<R> {
 }
 
 impl<R: io::BufRead> ReadSentence for Reader<R> {
-    fn read_sentence(&mut self) -> Result<Option<Vec<Token>>, Error> {
+    fn read_sentence_to_vec(&mut self) -> Result<Option<Vec<Token>>, Error> {
         let mut line = String::new();
         let mut tokens = Vec::new();
 
@@ -92,6 +96,58 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
             tokens.push(token);
         }
     }
+
+    fn read_sentence_to_graph(&mut self) -> Result<Option<DepGraph>, Error> {
+        let mut line = String::new();
+        let mut graph = DepGraph::default();
+        let mut edges: Vec<(usize, usize, String)> = Vec::new();
+
+        loop {
+            line.clear();
+
+            // End of reader.
+            if self.read.read_line(&mut line)? == 0 {
+                if graph.is_empty() {
+                    return Ok(None);
+                }
+                for (head, dep, rel) in edges {
+                    graph.add_relation(head, dep, rel)
+                }
+
+                return Ok(Some(graph));
+            }
+
+            // The blank line is a sentence separator. We want to be robust
+            // in the case a CoNLL file is malformed and has two newlines as
+            // a separator.
+            if line.trim().is_empty() {
+                if graph.is_empty() {
+                    continue;
+                }
+                for (head, dep, rel) in edges {
+                    graph.add_relation(head, dep, rel)
+                }
+                return Ok(Some(graph));
+            }
+
+            let mut iter = line.trim().split_terminator('\t');
+
+            let idx = parse_identifier_field(iter.next())?.unwrap();
+
+            let mut token = graph::Token::new(parse_form_field(iter.next())?);
+            token.set_lemma(parse_string_field(iter.next()));
+            token.set_cpos(parse_string_field(iter.next()));
+            token.set_pos(parse_string_field(iter.next()));
+            token.set_features(parse_string_field(iter.next()).map(Features::from_string));
+            let head = parse_numeric_field(iter.next())?.unwrap();
+            let head_rel = parse_string_field(iter.next()).unwrap();
+            edges.push((head, idx, head_rel));
+            // token.set_p_head(parse_numeric_field(iter.next())?);
+            // token.set_p_head_rel(parse_string_field(iter.next()));
+
+            graph.push_token(token);
+        }
+    }
 }
 
 /// An iterator over the sentences in a `Reader`.
@@ -109,7 +165,7 @@ where
     type Item = Result<Vec<Token>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.reader.read_sentence() {
+        match self.reader.read_sentence_to_vec() {
             Ok(None) => None,
             Ok(Some(sent)) => Some(Ok(sent)),
             Err(e) => Some(Err(e)),
@@ -211,14 +267,14 @@ mod tests {
     #[should_panic(expected = "ParseIntField")]
     fn reader_rejects_non_numeric_id() {
         let mut reader = super::Reader::new(string_reader("test"));
-        reader.read_sentence().unwrap();
+        reader.read_sentence_to_vec().unwrap();
     }
 
     #[test]
     #[should_panic(expected = "ParseIdentifierField")]
     fn reader_rejects_underscore_id() {
         let mut reader = super::Reader::new(string_reader("_"));
-        reader.read_sentence().unwrap();
+        reader.read_sentence_to_vec().unwrap();
     }
 
 }

@@ -1,10 +1,11 @@
 use std::mem;
 use std::ops::Index;
 
-use petgraph::graph::{node_index, DiGraph};
-use petgraph::Direction;
+use petgraph::algo::is_cyclic_directed;
+use petgraph::prelude::{Direction, DiGraph, EdgeRef, Graph, NodeIndex};
 
 use Features;
+use petgraph::graph::node_index;
 
 /// A builder for `Token`s.
 ///
@@ -209,6 +210,67 @@ impl DepGraph {
         self.0
             .add_edge(node_index(head), node_index(dependent), deprel);
     }
+
+    pub fn from_graph_indices(graph: DiGraph<Node, String>, indices: Vec<NodeIndex>) -> Result<Self, DepGraphError>{
+        let (mut nodes, edges) = graph.into_nodes_edges();
+        let mut old_to_new_indices = vec![0usize; nodes.len()];
+        let mut has_head = vec![false; nodes.len()];
+        for (sent_idx, old_idx) in indices.iter().map(|idx| idx.index()).enumerate() {
+            nodes.swap(old_idx, sent_idx);
+            old_to_new_indices[old_idx] = sent_idx;
+        }
+
+        let mut graph = Graph::with_capacity(nodes.len(), edges.len());
+        for node in nodes.into_iter() {
+            graph.add_node(node.weight);
+        }
+
+        for edge in edges.into_iter() {
+            let source = old_to_new_indices[edge.source().index()];
+            let target = old_to_new_indices[edge.target().index()];
+            if has_head[target] {
+                return Err(DepGraphError("Multiheaded token".to_string()))
+            }
+            has_head[target] = true;
+            let weight = edge.weight;
+            graph.add_edge(NodeIndex::new(source), NodeIndex::new(target), weight);
+        }
+
+        if is_cyclic_directed(&graph) {
+            return Err(DepGraphError("Graph contains cycle".to_string()))
+        };
+
+        Ok(DepGraph(graph))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.node_count() == 1
+    }
+
+    pub fn inner(&self) -> &DiGraph<Node, String> {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> DiGraph<Node, String> {
+        self.0
+    }
+
+    pub fn from_graph(graph: DiGraph<Node, String>) -> Result<Self, DepGraphError> {
+        if is_cyclic_directed(&graph) {
+            return Err(DepGraphError("Graph contains cycle".to_string()))
+        };
+
+        let mut has_head = vec![false; graph.node_count()];
+
+        for edge in graph.edge_references() {
+            if has_head[edge.target().index()] {
+                return Err(DepGraphError("Multiheaded token".to_string()))
+            }
+            has_head[edge.target().index()] = true;
+        }
+        Ok(DepGraph(graph))
+    }
+
 }
 
 impl Index<usize> for DepGraph {
@@ -217,4 +279,13 @@ impl Index<usize> for DepGraph {
     fn index(&self, idx: usize) -> &Self::Output {
         &self.0[node_index(idx)]
     }
+}
+
+pub struct DepGraphError(String);
+
+pub enum DepRel {
+    /// Projective dependency relation
+    PREL(String),
+    /// Non-projective dependency relation
+    REL(String),
 }
