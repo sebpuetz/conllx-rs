@@ -6,6 +6,7 @@ use petgraph::prelude::{DiGraph, Direction, EdgeRef, Graph, NodeIndex};
 
 use error::DepGraphError;
 use petgraph::graph::node_index;
+use std::fmt;
 use Features;
 
 /// A builder for `Token`s.
@@ -84,6 +85,8 @@ pub struct Token {
     cpos: Option<String>,
     pos: Option<String>,
     features: Option<Features>,
+    secondary_edge: Option<String>,
+    secondary_head: Option<usize>,
 }
 
 impl Token {
@@ -98,6 +101,8 @@ impl Token {
             cpos: None,
             pos: None,
             features: None,
+            secondary_edge: None,
+            secondary_head: None,
         }
     }
 
@@ -172,12 +177,68 @@ impl Token {
     pub fn set_features(&mut self, features: Option<Features>) -> Option<Features> {
         mem::replace(&mut self.features, features)
     }
+
+    pub fn set_secondary_head(&mut self, head: Option<usize>) -> Option<usize> {
+        mem::replace(&mut self.secondary_head, head)
+    }
+
+    pub fn set_secondary_edge<S>(&mut self, pos: Option<S>) -> Option<String>
+    where
+        S: Into<String>,
+    {
+        mem::replace(&mut self.pos, pos.map(|i| i.into()))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Node {
     Root,
     Token(Token),
+}
+
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Node::Root => write!(f, "ROOT"),
+            Node::Token(token) => write!(f, "{}", token.form()),
+        }
+    }
+}
+
+pub struct PDepGraph(DiGraph<Node, String>);
+
+impl PDepGraph {
+    pub fn try_from_dep_graph(graph: DepGraph) -> Result<Self, String> {
+        match flip_edges(graph.into_inner()) {
+            Ok(graph) => Ok(PDepGraph(graph)),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn into_inner(self) -> DiGraph<Node, String> {
+        self.0
+    }
+}
+
+fn flip_edges(mut graph: DiGraph<Node, String>) -> Result<DiGraph<Node, String>, String> {
+    for idx in graph.node_indices().skip(1) {
+        let edge = graph.first_edge(idx, Direction::Incoming).unwrap();
+        let (head, _) = graph.edge_endpoints(edge).unwrap();
+        let label = graph.remove_edge(edge);
+        let (new_head, new_label) = if let Node::Token(ref mut token) = &mut graph[idx] {
+            let new_head = token.set_secondary_head(Some(head.index()));
+            let new_label = token.set_secondary_edge(label);
+            match (new_head, new_label) {
+                (Some(head), Some(label)) => (head, label),
+                (_, _) => return Err("No secondary edges".to_string()),
+            }
+        } else {
+            continue;
+        };
+        graph.add_edge(node_index(new_head), idx, new_label);
+    }
+
+    Ok(graph)
 }
 
 pub struct DepGraph(DiGraph<Node, String>);
@@ -195,6 +256,13 @@ impl DepGraph {
         DepGraph(graph)
     }
 
+    pub fn try_from_p_dep_graph(pgraph: PDepGraph) -> Result<Self, String> {
+        match flip_edges(pgraph.into_inner()) {
+            Ok(graph) => Ok(DepGraph(graph)),
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn push_token(&mut self, token: Token) {
         self.0.add_node(Node::Token(token));
     }
@@ -203,7 +271,7 @@ impl DepGraph {
     ///
     /// If `dependent` already has a head relation, this relation is removed
     /// to ensure single-headedness.
-    pub fn add_relation(&mut self, head: usize, dependent: usize, deprel: String, ) {
+    pub fn add_relation(&mut self, head: usize, dependent: usize, deprel: String) {
         // Remove existing head relation (when present).
         if let Some(idx) = self
             .0
@@ -225,42 +293,36 @@ impl DepGraph {
     }
 
     pub fn from_graph_indices(
-        graph: DiGraph<Node, String>,
+        mut graph: DiGraph<Node, String>,
         indices: Vec<NodeIndex>,
     ) -> Result<Self, DepGraphError> {
-        let (mut nodes, edges) = graph.into_nodes_edges();
-        let mut old_to_new_indices = vec![0usize; nodes.len()];
-        let mut has_head = vec![false; nodes.len()];
-        for (sent_idx, old_idx) in indices.iter().map(|idx| idx.index()).enumerate() {
-            nodes.swap(old_idx, sent_idx);
-            old_to_new_indices[old_idx] = sent_idx;
+        let mut ret_graph = Graph::with_capacity(graph.node_count(), graph.edge_count());
+        let mut old_to_new_indices = vec![0usize; graph.node_count()];
+        for (sent_idx, old_idx) in indices.into_iter().enumerate() {
+            ret_graph.add_node(mem::replace(&mut graph[old_idx], Node::Root));
+            old_to_new_indices[old_idx.index()] = sent_idx;
         }
 
-        let mut graph = Graph::with_capacity(nodes.len(), edges.len());
-        for node in nodes.into_iter() {
-            graph.add_node(node.weight);
-        }
+        let (_, edges) = graph.into_nodes_edges();
+        let mut has_head = vec![false; ret_graph.node_count()];
 
         for edge in edges.into_iter() {
-            let source = old_to_new_indices[edge.source().index()];
-            let target = old_to_new_indices[edge.target().index()];
-            if has_head[target] {
+            if has_head[edge.target().index()] {
                 return Err(DepGraphError::MultiheadedToken {
                     value: "Multiheaded token".to_string(),
                 });
             }
-            has_head[target] = true;
-            let weight = edge.weight;
-            graph.add_edge(NodeIndex::new(source), NodeIndex::new(target), weight);
+            has_head[edge.target().index()] = true;
+            ret_graph.add_edge(edge.source(), edge.target(), edge.weight);
         }
 
-        if is_cyclic_directed(&graph) {
+        if is_cyclic_directed(&ret_graph) {
             return Err(DepGraphError::CyclicGraph {
                 value: "Graph contains cycle".to_string(),
             });
         };
 
-        Ok(DepGraph(graph))
+        Ok(DepGraph(ret_graph))
     }
 
     pub fn from_graph(graph: DiGraph<Node, String>) -> Result<Self, DepGraphError> {
@@ -297,4 +359,28 @@ pub enum DepRel {
     PREL(String),
     /// Non-projective dependency relation
     REL(String),
+}
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use graph::PDepGraph;
+    use petgraph::dot::Dot;
+    use ReadSentence;
+    use Reader;
+
+    static DEP: &[u8; 55] = b"1	Er	a	_	_	_	2	SUBJ	0	ROOT\n\
+2	geht	b	_	_	_	0	ROOT	1	SUBJ";
+
+    #[test]
+    fn secondary_edges() {
+        let c = Cursor::new(DEP.to_vec());
+        let mut reader = Reader::new(c);
+
+        let og = reader.read_sentence_to_graph().unwrap().unwrap();
+        println!("{}", Dot::new(og.inner()));
+        let pg = PDepGraph::try_from_dep_graph(og).unwrap();
+        let g = pg.into_inner();
+        println!("{}", Dot::new(&g));
+    }
 }

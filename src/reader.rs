@@ -146,8 +146,8 @@ impl<R: io::BufRead> ReadSentence for Reader<R> {
             let head = parse_numeric_field(iter.next())?.unwrap();
             let head_rel = parse_string_field(iter.next()).unwrap();
             edges.push((head, idx, head_rel));
-            // token.set_p_head(parse_numeric_field(iter.next())?);
-            // token.set_p_head_rel(parse_string_field(iter.next()));
+            token.set_secondary_head(parse_numeric_field(iter.next())?);
+            token.set_secondary_edge(parse_string_field(iter.next()));
 
             graph.add_node(Node::Token(token));
         }
