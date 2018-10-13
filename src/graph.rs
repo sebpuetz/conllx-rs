@@ -8,6 +8,7 @@ use error::DepGraphError;
 use petgraph::graph::node_index;
 use std::fmt;
 use Features;
+use std::marker::PhantomData;
 
 /// A builder for `Token`s.
 ///
@@ -205,18 +206,12 @@ impl fmt::Display for Node {
     }
 }
 
-pub struct PDepGraph(DiGraph<Node, String>);
-
-impl PDepGraph {
-    pub fn try_from_dep_graph(graph: DepGraph) -> Result<Self, String> {
+impl DepGraph<Projective> {
+    pub fn try_from_dep_graph(graph: DepGraph<NonProjective>) -> Result<Self, String> {
         match flip_edges(graph.into_inner()) {
-            Ok(graph) => Ok(PDepGraph(graph)),
+            Ok(graph) => Ok(DepGraph(graph, PhantomData)),
             Err(err) => Err(err),
         }
-    }
-
-    pub fn into_inner(self) -> DiGraph<Node, String> {
-        self.0
     }
 }
 
@@ -241,26 +236,31 @@ fn flip_edges(mut graph: DiGraph<Node, String>) -> Result<DiGraph<Node, String>,
     Ok(graph)
 }
 
-pub struct DepGraph(DiGraph<Node, String>);
+pub struct NonProjective{}
+pub struct Projective{}
+
+pub struct DepGraph<Type = NonProjective>(DiGraph<Node, String>, PhantomData<Type>);
 
 impl Default for DepGraph {
     fn default() -> Self {
         let mut g = DiGraph::new();
         g.add_node(Node::Root);
-        DepGraph(g)
+        DepGraph(g, PhantomData)
     }
 }
 
-impl DepGraph {
-    pub(crate) fn new(graph: DiGraph<Node, String>) -> Self {
-        DepGraph(graph)
-    }
-
-    pub fn try_from_p_dep_graph(pgraph: PDepGraph) -> Result<Self, String> {
+impl DepGraph<NonProjective> {
+    pub fn try_from_p_dep_graph(pgraph: DepGraph<Projective>) -> Result<Self, String> {
         match flip_edges(pgraph.into_inner()) {
-            Ok(graph) => Ok(DepGraph(graph)),
+            Ok(graph) => Ok(DepGraph(graph, PhantomData)),
             Err(err) => Err(err),
         }
+    }
+}
+
+impl<Type> DepGraph<Type> {
+    pub(crate) fn new(graph: DiGraph<Node, String>) -> Self {
+        DepGraph(graph, PhantomData)
     }
 
     pub fn push_token(&mut self, token: Token) {
@@ -322,7 +322,7 @@ impl DepGraph {
             });
         };
 
-        Ok(DepGraph(ret_graph))
+        Ok(DepGraph(ret_graph, PhantomData))
     }
 
     pub fn from_graph(graph: DiGraph<Node, String>) -> Result<Self, DepGraphError> {
@@ -342,11 +342,11 @@ impl DepGraph {
             }
             has_head[edge.target().index()] = true;
         }
-        Ok(DepGraph(graph))
+        Ok(DepGraph(graph, PhantomData))
     }
 }
 
-impl Index<usize> for DepGraph {
+impl<Type> Index<usize> for DepGraph<Type> {
     type Output = Node;
 
     fn index(&self, idx: usize) -> &Self::Output {
@@ -364,10 +364,10 @@ pub enum DepRel {
 mod tests {
     use std::io::Cursor;
 
-    use graph::PDepGraph;
     use petgraph::dot::Dot;
     use ReadSentence;
     use Reader;
+    use graph::DepGraph;
 
     static DEP: &[u8; 55] = b"1	Er	a	_	_	_	2	SUBJ	0	ROOT\n\
 2	geht	b	_	_	_	0	ROOT	1	SUBJ";
@@ -379,7 +379,7 @@ mod tests {
 
         let og = reader.read_sentence_to_graph().unwrap().unwrap();
         println!("{}", Dot::new(og.inner()));
-        let pg = PDepGraph::try_from_dep_graph(og).unwrap();
+        let pg = DepGraph::try_from_dep_graph(og).unwrap();
         let g = pg.into_inner();
         println!("{}", Dot::new(&g));
     }
